@@ -1,0 +1,395 @@
+---
+title: "Analisis Encuesta EME usando R"
+output:
+  word_document: default
+  html_notebook: default
+---
+
+# Antecedentes
+
+Este notebook presenta ejemplos de análisis de Encuestas EME usando R. Se utilizarán funciones del paquete `survey`, para obtener las estimaciones y los errores estándar, coeficiente de variación , grados de libertad, todo esto para evaluar la calidad de las estimaciones.
+
+
+# Pasos previos
+
+En primer lugar, se cargan las  las librerías
+
+
+```{r message=FALSE, warning=FALSE}
+
+
+library(dplyr)
+library(survey)
+library (haven)
+library(openxlsx)
+library(readxl)
+library(ggplot2)
+library(ggthemes)
+
+```
+
+
+
+Luego se define el directorio de trabajo, se aprovecha de leer los archivos
+
+
+```{r}
+
+EME_2019 <-read_sav("C:/Users/jugar/OneDrive - Instituto Nacional de Estadisticas/Presentaciones/Analisis de Encuestas con R/Analisis ESI-EME/base-de-datos-full-vi-eme-spss/Base de datos Full VI EME.sav")
+
+
+
+```
+
+Primero que todo, para facilitar los análisis, se crea na variable binaria, que identifique a las personas microemprendedoras.Para ello, se utiliza como base la variable `a1`.
+
+```{r}
+attributes(EME_2019$a1)$labels
+```
+
+En función de lo anterior, para facilitar las cosas, se crea una variable binaria, que identifique a las personas micriemprendedoras
+
+
+```{r}
+##Binario microemprendedor
+EME_2019<-mutate(EME_2019, microemprendedor=case_when( a1==1 | a1 ==2 ~1, TRUE ~0))
+
+```
+
+
+Primero filtramos los casos de Biobío que sean identificados como personas microemprendedoras. Aquí son útiles las funciones del paquete `dplyr`
+
+```{r}
+
+biobio<-filter(EME_2019, region==8 & microemprendedor==1)
+
+###creamos una variable microemprendedor expandida
+
+biobio<-mutate(biobio, me_exp=microemprendedor*Factor_EME)
+
+
+muestra<-select(biobio, region, grupo_edad, sexo, microemprendedor, Factor_EME, me_exp)
+
+head(muestra)
+
+```
+
+
+Luego, generamos grupos por sexo
+
+```{r}
+
+biobio<-group_by(biobio, sexo)
+
+
+```
+
+
+Creamos una tabla resumen con los totales por sexo
+
+```{r}
+
+memp_por_sexo<-summarise(biobio, total=sum(me_exp), total_no_ponderado=sum(microemprendedor))
+
+
+memp_por_sexo
+
+```
+
+
+
+
+Se crea el diseño complejo
+
+```{r}
+
+###Diseño complejo
+##creamos el disenio
+diseno_EME =svydesign(id=~VarUnit, # Etiquetas UPM
+                       strata=~ VarStrat, #Estratos
+                       check.strata=TRUE, # Comprueba que los clusters est?n anidados en los estratos
+                       weights=~Factor_EME, # Ponderador
+                       data=EME_2019)
+
+options(survey.lonely.psu="remove") 
+
+diseno_analisis<-subset(diseno_EME, region==8 & microemprendedor==1)
+
+```
+
+
+
+
+# Microemprendedores por sexo
+
+
+```{r}
+####Total microemprendedores subset(diseno_enet,region2==8)
+microemp_sexo<-svyby(~microemprendedor,by=~sexo,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,svytotal ,vartype=c("se","cv"))
+uw_microemp_sexo<-svyby(~microemprendedor,by=~sexo,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,unwtd.count ,vartype=c("se","cv"))
+microemp_sexo<-cbind(microemp_sexo,nobs=uw_microemp_sexo$counts)
+microemp_sexo<-mutate(microemp_sexo,  gl=0)
+
+categoria<-as.numeric(levels(microemp_sexo$sexo))
+
+for(i in categoria)
+{
+  microemp_sexo$gl[i]<-degf(subset(diseno_EME, region==8 & microemprendedor==1 & sexo == i  ))
+}
+
+microemp_sexo<-mutate(microemp_sexo, porcentaje=microemprendedor/sum(microemprendedor)*100)
+
+microemp_sexo
+
+
+```
+
+Se agregan etiquetas al dataframe `microemp_sexo`
+
+```{r}
+etiquetas<-as.character(attributes(EME_2019$sexo)$labels)
+
+
+a<-names(attributes(EME_2019$sexo)$labels)
+
+
+a<-a[-c(3)]
+
+
+
+microemp_sexo<-cbind(a, microemp_sexo)
+
+microemp_sexo
+
+```
+
+
+
+
+
+Para graficar
+
+```{r}
+
+
+microemp_sexo$participacion <-NA
+microemp_sexo[1,9]<-paste(format(round(microemp_sexo[1,8],1),nsmall=1),"%", sep="")
+microemp_sexo[2,9]<-paste(format(round(microemp_sexo[2,8],1), nsmall=1),"%", sep="")
+
+graf_sexo<-ggplot(data=microemp_sexo,aes(x="",y=participacion, fill=a))+
+       geom_bar(stat = "identity", color="white")+
+       geom_text(aes(label=participacion),position=position_stack(vjust=0.5),color="white",size=9)+
+       coord_polar(theta = "y") + scale_fill_manual(values=c("steelblue", "orange")) + theme_void() + labs(title ="Participación Microemprendedores según sexo")
+
+graf_sexo + theme(legend.text = element_text(size = 12)) + theme(legend.title = element_text(colour = "white"))
+
+graf_sexo
+```
+
+#Microemprendedores por grupo de edad
+
+```{r}
+
+##Tramo de edad
+
+microemp_edad<-svyby(~microemprendedor,by=~grupo_edad,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,svytotal ,vartype=c("se","cv"))
+uw_microemp_edad<-svyby(~microemprendedor,by=~grupo_edad,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,unwtd.count ,vartype=c("se","cv"))
+microemp_edad<-cbind(microemp_edad,nobs=uw_microemp_edad$counts)
+microemp_edad<-mutate(microemp_edad,  gl=0)
+
+
+categoria<-as.numeric(levels(microemp_edad$grupo_edad))
+
+
+
+for(i in categoria)
+{
+  microemp_edad$gl[i]<-degf(subset(diseno_analisis, grupo_edad == i  ))
+}
+
+microemp_edad
+
+```
+
+
+```{r}
+attributes(EME_2019$grupo_edad)$labels
+
+
+
+etiquetas_edad<-names(attributes(EME_2019$grupo_edad)$labels)
+
+
+microemp_edad<-cbind(etiquetas_edad, microemp_edad)
+
+
+
+
+```
+
+
+
+
+
+Gráfico
+```{r}
+### GRAFICO aqui me interesa gráfico de frecuencia o porcentaje de MICROEMPRENDEDORES POR TRAMO DE EDAD
+
+microemp_edad<-mutate(microemp_edad, porcentaje=microemprendedor/sum(microemprendedor)*100)
+
+microemp_edad$participacion <-NA
+
+for(i in 1:dim(microemp_edad)[1]){
+  microemp_edad$participacion[i] <- paste(format(round(microemp_edad$porcentaje[i],1),nsmall=1),"%", sep="")
+}
+
+graf_edad<-ggplot(data=microemp_edad,aes(x="",y=participacion, fill=etiquetas_edad))+
+       geom_bar(stat = "identity", color="white")+
+       geom_text(aes(label=participacion),position=position_stack(vjust=0.5),color="white",size=4)+
+       coord_polar(theta = "y") + scale_fill_manual(values=c("steelblue", "orange","green","red","gray","purple")) + theme_void() + labs(title ="Participación Microemprendedores según Tramo de edad")
+
+graf_edad + theme(legend.text = element_text(size = 12)) + theme(legend.title = element_text(colour = "white"))
+
+
+
+
+```
+
+Microemprendedores por categoria de ocupación
+```{r}
+
+microemp_CISE<-svyby(~microemprendedor,by=~CISE,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,svytotal ,vartype=c("se","cv"))
+
+uw_microemp_CISE<-svyby(~microemprendedor,by=~CISE,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,unwtd.count ,vartype=c("se","cv"))
+microemp_CISE<-cbind(microemp_CISE,nobs=uw_microemp_CISE$counts)
+microemp_CISE<-mutate(microemp_CISE, gl=0)
+for(i in 1:nrow(microemp_CISE))
+{
+  categoria<-microemp_CISE$CISE[i]
+  microemp_CISE$gl[i]<-degf(subset(diseno_EME, CISE == categoria  ))
+}
+
+
+microemp_CISE
+
+
+
+
+```
+
+
+Grafico Microemprendedores por categoria
+
+
+```{r}
+
+
+etiquetas_categoria<-names(attributes(EME_2019$CISE)$labels)
+
+microemp_CISE<-cbind(etiquetas_categoria, microemp_CISE)
+
+
+
+microemp_CISE<-mutate(microemp_CISE, porcentaje=microemprendedor/sum(microemprendedor)*100)
+
+
+graf_CISE<-ggplot(microemp_CISE, aes(x=etiquetas_categoria))+
+  geom_bar(aes(y=porcentaje), stat="identity", fill="steelblue")+
+  geom_point(aes(y=porcentaje), size=0,pch=0, colour="steelblue", bg="white") + geom_label(aes(x=etiquetas_categoria, y=porcentaje*1, label=format((round(porcentaje, digits=1)),nsmall = 1)), size=6, fill="steelblue",col="white")+
+  xlab("CISE")+ylab("Participación (%)")+
+  labs(title ="Participación Microemprendedores según CISE (%)")+
+  theme_classic() 
+
+  graf_CISE + theme(plot.title = element_text(size = 14, colour = "black", hjust = 0.50, vjust = 2.5))
+
+
+
+```
+
+
+
+```{r}
+
+####Lamina 7 segun motivacion para emprender
+
+
+attributes(EME_2019$b1)$labels
+
+  
+EME_2019<-mutate(EME_2019, motivacion_recoded=case_when( b1==5| b1==6 |b1==8 |b1==9 ~2,
+                                                          b1==2 | b1==7 |b1==3 |b1==10 |b1==4 | b1==11 ~3,
+                                                         b1==77 ~4,
+                                                         b1==88 | b1==99 ~5,
+                                                         TRUE ~as.numeric(b1)))
+
+EME_2019<-mutate(EME_2019, motivacion_recoded2=case_when( motivacion_recoded==1 | motivacion_recoded ==4 ~1,
+                                                             TRUE ~as.numeric(motivacion_recoded)))
+
+etiquetas_motivacion2<-c("Tradición", "Oportunidad", "Necesidad", "NS/NR")
+
+
+diseno_EME =svydesign(id=~VarUnit, # Etiquetas UPM
+                      strata=~ VarStrat, #Estratos
+                      check.strata=TRUE, # Comprueba que los clusters est?n anidados en los estratos
+                      weights=~Factor_EME, # Ponderador
+                      data=EME_2019)
+
+options(survey.lonely.psu="remove") 
+
+diseno_analisis<-subset(diseno_EME, region==8 & microemprendedor==1)
+
+
+
+```
+
+
+```{r}
+
+estimaciones<-svyby(~microemprendedor,by=~motivacion_recoded2,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,svytotal ,vartype=c("se","cv"))
+recuento<-svyby(~microemprendedor,by=~motivacion_recoded2,data=EME_2019,drop.empty.groups=FALSE, na.rm.all=FALSE, diseno_analisis,unwtd.count ,vartype=c("se","cv"))
+estimaciones<-cbind(estimaciones,nobs=recuento$counts)
+estimaciones<-mutate(estimaciones,  gl=0)
+
+for(i in 1:nrow(estimaciones))
+{
+  categoria<-estimaciones$motivacion_recoded2[i]
+  estimaciones$gl[i]<-degf(subset(diseno_analisis, motivacion_recoded2 == categoria  ))
+}
+
+motivacion_AS2<-estimaciones
+
+
+motivacion_AS2<-cbind(etiquetas_motivacion2, motivacion_AS2)
+
+motivacion_AS2
+
+
+
+
+
+```
+
+Gráfico
+```{r}
+
+
+motivacion_AS2<-mutate(motivacion_AS2, porcentaje=microemprendedor/sum(microemprendedor)*100)
+
+graf_motivacion2<-ggplot(motivacion_AS2, aes(x=reorder(etiquetas_motivacion2, -porcentaje)))+
+  geom_bar(aes(y=porcentaje), stat="identity", fill="steelblue")+
+  geom_point(aes(y=porcentaje), size=0,pch=0, colour="steelblue", bg="white") + geom_label(aes(x=etiquetas_motivacion2, y=porcentaje*1, label=format((round(porcentaje, digits=1)),nsmall = 1)), size=5, fill="steelblue",col="white")+
+  xlab("Motivación para emprender")+ylab("Participación (%)")+
+  labs(title ="Participación Microemprendedores según motivación para emprender (%)")+
+  theme_classic() 
+
+  graf_motivacion2 + theme(plot.title = element_text(size = 12, colour = "black", hjust = 0.50, vjust = 2.5))
+
+
+
+
+
+
+
+```
+
+
